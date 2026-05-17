@@ -21,6 +21,9 @@
 #include <QCheckBox>
 #include <QScrollBar>
 #include <QWheelEvent>
+#include <QLineEdit>
+#include <QSpinBox>
+#include <QSlider>
 #include <cstdint>
 #include <cmath>
 
@@ -53,6 +56,7 @@ class PointCloudWidget : public QWidget {
 public:
     explicit PointCloudWidget(QWidget *parent = nullptr);
     void updateData(const QVector<LidarPoint>& points, const ObstacleDistance& obs);
+    void setThresholds(int t1, int t2, int t3);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -61,7 +65,10 @@ protected:
 private:
     QVector<LidarPoint> m_points;
     ObstacleDistance    m_obstacle;
-    float               m_scale = 0.08f;  // 像素/毫米，约1m=80px
+    float               m_scale = 0.08f;
+    int                 m_threshold1 = 800;
+    int                 m_threshold2 = 400;
+    int                 m_threshold3 = 200;
 
     QColor distToColor(uint16_t dist) const;
 };
@@ -74,12 +81,16 @@ class ObstacleWidget : public QWidget {
 public:
     explicit ObstacleWidget(QWidget *parent = nullptr);
     void updateObstacle(const ObstacleDistance& obs);
+    void setThresholds(int t1, int t2, int t3);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
     ObstacleDistance m_obs;
+    int              m_threshold1 = 800;
+    int              m_threshold2 = 400;
+    int              m_threshold3 = 200;
     QColor distToColor(uint16_t dist) const;
     void drawDirectionBar(QPainter& p, int cx, int cy, int dir,
                           uint16_t dist, const QString& label);
@@ -101,6 +112,11 @@ private slots:
     void onBtnRefreshClicked();
     void onReadyRead();
     void onTimerUpdate();
+    void onBtnSendThresholdClicked();
+    void onBtnResetThresholdClicked();
+    void onThreshold1Changed(int value);
+    void onThreshold2Changed(int value);
+    void onThreshold3Changed(int value);
 
 private:
     // --- UI 构建 ---
@@ -108,6 +124,7 @@ private:
     void buildCommTab(QWidget* tab);
     void buildCloudTab(QWidget* tab);
     void buildObstacleTab(QWidget* tab);
+    void buildThresholdTab(QWidget* tab);
     void scanPorts();
 
     // --- 数据解析 ---
@@ -121,6 +138,11 @@ private:
     static constexpr uint8_t FRAME_VERLEN = 0x2C;
     static constexpr int     FRAME_LEN    = 47;
     static const uint8_t     CRC_TABLE[256];
+
+    // --- 灯带阈值通信协议常量 ---
+    static constexpr uint8_t THRESHOLD_FRAME_HEADER = 0xAA;
+    static constexpr uint8_t THRESHOLD_CMD_SET      = 0x10;
+    static constexpr uint8_t THRESHOLD_FRAME_LEN     = 15;
 
     // --- 串口 ---
     QSerialPort *m_serial;
@@ -150,10 +172,22 @@ private:
     // Tab2: 点云视图
     PointCloudWidget *m_cloudWidget;
     QLabel *m_labScanInfo;
+    QLabel *m_labLegend1, *m_labLegend2, *m_labLegend3, *m_labLegend4;
 
     // Tab3: 障碍物
     ObstacleWidget *m_obsWidget;
     QLabel *m_labFront, *m_labRight, *m_labBack, *m_labLeft;
+
+    // Tab4: 灯带阈值设置
+    QSpinBox *m_spinThreshold1;
+    QSpinBox *m_spinThreshold2;
+    QSpinBox *m_spinThreshold3;
+    QSlider *m_sliderThreshold1;
+    QSlider *m_sliderThreshold2;
+    QSlider *m_sliderThreshold3;
+    QPushButton *m_btnSendThreshold;
+    QPushButton *m_btnResetThreshold;
+    QLabel *m_labThresholdStatus;
 
     // 状态栏
     QLabel *m_labStatus, *m_labRX;

@@ -1,6 +1,5 @@
 #include "mainwindow.h"
 #include <QPainterPath>
-#include <algorithm>
 #include <QStatusBar>
 // ============================================================
 //  CRC8 查找表（来自 LD14P 开发手册，与 STM32 侧完全一致）
@@ -50,11 +49,17 @@ PointCloudWidget::PointCloudWidget(QWidget *parent) : QWidget(parent) {
 void PointCloudWidget::updateData(const QVector<LidarPoint>& pts, const ObstacleDistance& obs) {
     m_points  = pts;
     m_obstacle = obs;
-    update();  // 触发重绘
+    update();
+}
+
+void PointCloudWidget::setThresholds(int t1, int t2, int t3) {
+    m_threshold1 = t1;
+    m_threshold2 = t2;
+    m_threshold3 = t3;
+    update();
 }
 
 void PointCloudWidget::wheelEvent(QWheelEvent *event) {
-    // 滚轮上/下 → 放大/缩小
     if (event->angleDelta().y() > 0)
         m_scale *= 1.12f;
     else
@@ -63,12 +68,11 @@ void PointCloudWidget::wheelEvent(QWheelEvent *event) {
     update();
 }
 
-// 距离→颜色映射：绿(安全) → 黄 → 橙 → 红(危险)
 QColor PointCloudWidget::distToColor(uint16_t dist) const {
     if (dist == 0 || dist > 6000) return QColor(80, 80, 80);
-    if (dist > 800)  return QColor(40, 200, 80);
-    if (dist > 400)  return QColor(220, 200, 0);
-    if (dist > 200)  return QColor(255, 120, 0);
+    if (dist > m_threshold1)  return QColor(40, 200, 80);
+    if (dist > m_threshold2)  return QColor(220, 200, 0);
+    if (dist > m_threshold3)  return QColor(255, 120, 0);
     return QColor(230, 30, 30);
 }
 
@@ -151,10 +155,17 @@ void ObstacleWidget::updateObstacle(const ObstacleDistance& obs) {
     update();
 }
 
+void ObstacleWidget::setThresholds(int t1, int t2, int t3) {
+    m_threshold1 = t1;
+    m_threshold2 = t2;
+    m_threshold3 = t3;
+    update();
+}
+
 QColor ObstacleWidget::distToColor(uint16_t dist) const {
-    if (dist > 800)  return QColor(40, 190, 80);
-    if (dist > 400)  return QColor(220, 190, 0);
-    if (dist > 200)  return QColor(255, 110, 0);
+    if (dist > m_threshold1)  return QColor(40, 190, 80);
+    if (dist > m_threshold2)  return QColor(220, 190, 0);
+    if (dist > m_threshold3)  return QColor(255, 110, 0);
     return QColor(220, 30, 30);
 }
 
@@ -298,10 +309,12 @@ void MainWindow::buildUI() {
     QWidget *tab1 = new QWidget(); buildCommTab(tab1);
     QWidget *tab2 = new QWidget(); buildCloudTab(tab2);
     QWidget *tab3 = new QWidget(); buildObstacleTab(tab3);
+    QWidget *tab4 = new QWidget(); buildThresholdTab(tab4);
 
     tabs->addTab(tab1, "📡  通讯助手");
     tabs->addTab(tab2, "🗺  点云视图");
     tabs->addTab(tab3, "⚠  障碍物信息");
+    tabs->addTab(tab4, "💡  灯带阈值");
 
     root->addWidget(tabs, 1);
 
@@ -383,10 +396,14 @@ void MainWindow::buildCloudTab(QWidget* tab) {
         return l;
     };
     legend->addWidget(new QLabel("距离颜色:"));
-    legend->addWidget(mkLeg("#28be50", "> 800mm  安全"));
-    legend->addWidget(mkLeg("#dcc800", "400~800mm  注意"));
-    legend->addWidget(mkLeg("#ff7800", "200~400mm  警告"));
-    legend->addWidget(mkLeg("#e61e1e", "< 200mm  危险"));
+    m_labLegend1 = mkLeg("#28be50", "> 800mm  安全");
+    m_labLegend2 = mkLeg("#dcc800", "400~800mm  注意");
+    m_labLegend3 = mkLeg("#ff7800", "200~400mm  警告");
+    m_labLegend4 = mkLeg("#e61e1e", "< 200mm  危险");
+    legend->addWidget(m_labLegend1);
+    legend->addWidget(m_labLegend2);
+    legend->addWidget(m_labLegend3);
+    legend->addWidget(m_labLegend4);
     legend->addStretch();
     lay->addLayout(legend);
 }
@@ -439,6 +456,354 @@ void MainWindow::buildObstacleTab(QWidget* tab) {
     lay->addWidget(numGrp, 1);
 }
 
+void MainWindow::buildThresholdTab(QWidget* tab) {
+    QVBoxLayout *mainLay = new QVBoxLayout(tab);
+    mainLay->setSpacing(12);
+    mainLay->setContentsMargins(20, 20, 20, 20);
+
+    QLabel *titleLabel = new QLabel("灯带四级阈值设置");
+    titleLabel->setStyleSheet("font-size: 18px; font-weight: bold; color: #4a9eff;");
+    mainLay->addWidget(titleLabel);
+
+    QLabel *descLabel = new QLabel(
+        "设置灯带四个颜色等级的阈值。障碍物距离从远到近，灯色依次：绿→黄→橙→红\n"
+        "拖动滑块或直接输入数值调整，系统会自动确保阈值顺序合理");
+    descLabel->setStyleSheet("color: #888; font-size: 12px;");
+    descLabel->setWordWrap(true);
+    mainLay->addWidget(descLabel);
+
+    QGroupBox *thresholdGrp = new QGroupBox("颜色等级阈值（单位：mm）");
+    QVBoxLayout *grpLay = new QVBoxLayout(thresholdGrp);
+    grpLay->setSpacing(18);
+
+    auto createThresholdRow = [&](const QString &colorName, const QString &colorHex, 
+                                   const QString &description, QSpinBox *&spinBox, QSlider *&slider, 
+                                   int defaultValue) {
+        QVBoxLayout *row = new QVBoxLayout();
+        row->setSpacing(8);
+
+        QHBoxLayout *topRow = new QHBoxLayout();
+        
+        QLabel *colorLabel = new QLabel();
+        colorLabel->setFixedSize(40, 40);
+        colorLabel->setStyleSheet(QString("background: %1; border-radius: 8px;").arg(colorHex));
+        
+        QLabel *nameLabel = new QLabel(colorName + ":");
+        nameLabel->setStyleSheet("font-size: 14px; font-weight: bold; color: #ddd; min-width: 80px;");
+        
+        spinBox = new QSpinBox();
+        spinBox->setMinimum(50);
+        spinBox->setMaximum(2000);
+        spinBox->setValue(defaultValue);
+        spinBox->setSuffix(" mm");
+        spinBox->setAlignment(Qt::AlignCenter);
+        spinBox->setStyleSheet(
+            "QSpinBox {"
+            "    padding: 8px 12px;"
+            "    border: 2px solid #555;"
+            "    border-radius: 6px;"
+            "    background: #1a1a2a;"
+            "    color: #ddd;"
+            "    font-size: 14px;"
+            "    min-width: 120px;"
+            "}"
+            "QSpinBox::up-button, QSpinBox::down-button {"
+            "    background: #333;"
+            "    border-radius: 3px;"
+            "}"
+            "QSpinBox::up-button:hover, QSpinBox::down-button:hover {"
+            "    background: #444;"
+            "}"
+        );
+        
+        QLabel *descLabel = new QLabel(description);
+        descLabel->setStyleSheet("color: #888; font-size: 11px;");
+        descLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        
+        topRow->addWidget(colorLabel);
+        topRow->addWidget(nameLabel);
+        topRow->addWidget(spinBox);
+        topRow->addWidget(descLabel, 1);
+
+        slider = new QSlider(Qt::Horizontal);
+        slider->setMinimum(50);
+        slider->setMaximum(2000);
+        slider->setValue(defaultValue);
+        slider->setStyleSheet(
+            "QSlider::groove:horizontal {"
+            "    background: #2a2a3a;"
+            "    height: 8px;"
+            "    border-radius: 4px;"
+            "}"
+            "QSlider::handle:horizontal {"
+            "    background: " + colorHex + ";"
+            "    width: 20px;"
+            "    height: 20px;"
+            "    margin: -6px 0;"
+            "    border-radius: 10px;"
+            "}"
+            "QSlider::handle:horizontal:hover {"
+            "    background: #ffffff;"
+            "}"
+        );
+
+        row->addLayout(topRow);
+        row->addWidget(slider);
+        
+        grpLay->addLayout(row);
+    };
+
+    createThresholdRow("安全 (绿)", "#28be50", "> 阈值1 (距离足够远)", m_spinThreshold1, m_sliderThreshold1, 800);
+    createThresholdRow("注意 (黄)", "#dcc800", "阈值2 ~ 阈值1 (需要注意)", m_spinThreshold2, m_sliderThreshold2, 400);
+    createThresholdRow("警告 (橙)", "#ff7800", "阈值3 ~ 阈值2 (危险临近)", m_spinThreshold3, m_sliderThreshold3, 200);
+    
+    QLabel *dangerLabel = new QLabel("  ⚠️  危险 (红): < 阈值3 (非常危险，立即停止)");
+    dangerLabel->setStyleSheet("color: #e74c3c; font-weight: bold; font-size: 13px; padding: 8px; background: rgba(231,76,60,0.1); border-radius: 6px;");
+    grpLay->addWidget(dangerLabel);
+
+    mainLay->addWidget(thresholdGrp);
+
+    QHBoxLayout *btnLay = new QHBoxLayout();
+    btnLay->setSpacing(10);
+
+    m_btnSendThreshold = new QPushButton("🚀 发送阈值到下位机");
+    m_btnSendThreshold->setFixedHeight(45);
+    m_btnSendThreshold->setStyleSheet(
+        "QPushButton {"
+        "    background: #27ae60;"
+        "    color: white;"
+        "    border: none;"
+        "    border-radius: 8px;"
+        "    font-size: 15px;"
+        "    font-weight: bold;"
+        "    padding: 10px 20px;"
+        "}"
+        "QPushButton:hover {"
+        "    background: #2ecc71;"
+        "}"
+        "QPushButton:disabled {"
+        "    background: #555;"
+        "    color: #888;"
+        "}"
+    );
+
+    m_btnResetThreshold = new QPushButton("🔄 恢复默认");
+    m_btnResetThreshold->setFixedHeight(45);
+    m_btnResetThreshold->setStyleSheet(
+        "QPushButton {"
+        "    background: #e74c3c;"
+        "    color: white;"
+        "    border: none;"
+        "    border-radius: 8px;"
+        "    font-size: 15px;"
+        "    font-weight: bold;"
+        "    padding: 10px 20px;"
+        "}"
+        "QPushButton:hover {"
+        "    background: #c0392b;"
+        "}"
+    );
+
+    m_labThresholdStatus = new QLabel("等待发送...");
+    m_labThresholdStatus->setStyleSheet("color: #888; font-size: 12px;");
+
+    btnLay->addWidget(m_btnSendThreshold);
+    btnLay->addWidget(m_btnResetThreshold);
+    btnLay->addStretch();
+    btnLay->addWidget(m_labThresholdStatus);
+
+    mainLay->addLayout(btnLay);
+
+    connect(m_btnSendThreshold, &QPushButton::clicked, this, &MainWindow::onBtnSendThresholdClicked);
+    connect(m_btnResetThreshold, &QPushButton::clicked, this, &MainWindow::onBtnResetThresholdClicked);
+
+    connect(m_spinThreshold1, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onThreshold1Changed);
+    connect(m_sliderThreshold1, &QSlider::valueChanged, this, [this](int value) {
+        {
+            QSignalBlocker blocker(m_spinThreshold1);
+            m_spinThreshold1->setValue(value);
+        }
+        onThreshold1Changed(value);
+    });
+
+    connect(m_spinThreshold2, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onThreshold2Changed);
+    connect(m_sliderThreshold2, &QSlider::valueChanged, this, [this](int value) {
+        {
+            QSignalBlocker blocker(m_spinThreshold2);
+            m_spinThreshold2->setValue(value);
+        }
+        onThreshold2Changed(value);
+    });
+
+    connect(m_spinThreshold3, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onThreshold3Changed);
+    connect(m_sliderThreshold3, &QSlider::valueChanged, this, [this](int value) {
+        {
+            QSignalBlocker blocker(m_spinThreshold3);
+            m_spinThreshold3->setValue(value);
+        }
+        onThreshold3Changed(value);
+    });
+
+    m_spinThreshold1->setMinimum(401);
+    m_spinThreshold2->setMinimum(201);
+    m_spinThreshold2->setMaximum(799);
+    m_spinThreshold3->setMaximum(399);
+    m_sliderThreshold1->setMinimum(401);
+    m_sliderThreshold2->setMinimum(201);
+    m_sliderThreshold2->setMaximum(799);
+    m_sliderThreshold3->setMaximum(399);
+
+    m_cloudWidget->setThresholds(800, 400, 200);
+    m_obsWidget->setThresholds(800, 400, 200);
+
+    m_btnSendThreshold->setEnabled(false);
+    connect(m_serial, &::QSerialPort::open, this, [this]() {
+        m_btnSendThreshold->setEnabled(true);
+    });
+    connect(m_serial, &::QSerialPort::close, this, [this]() {
+        m_btnSendThreshold->setEnabled(false);
+        m_labThresholdStatus->setText("串口未连接");
+    });
+
+    mainLay->addStretch();
+}
+
+void MainWindow::onThreshold1Changed(int value) {
+    QSignalBlocker slider1(m_sliderThreshold1);
+    m_sliderThreshold1->setValue(value);
+    m_spinThreshold2->setMaximum(value - 1);
+    m_sliderThreshold2->setMaximum(value - 1);
+
+    int t1 = m_spinThreshold1->value();
+    int t2 = m_spinThreshold2->value();
+    int t3 = m_spinThreshold3->value();
+    m_cloudWidget->setThresholds(t1, t2, t3);
+    m_obsWidget->setThresholds(t1, t2, t3);
+
+    m_labLegend1->setText(QString("> %1mm  安全").arg(t1));
+    m_labLegend2->setText(QString("%1~%2mm  注意").arg(t2).arg(t1));
+    m_labLegend3->setText(QString("%1~%2mm  警告").arg(t3).arg(t2));
+    m_labLegend4->setText(QString("< %1mm  危险").arg(t3));
+}
+
+void MainWindow::onThreshold2Changed(int value) {
+    QSignalBlocker slider2(m_sliderThreshold2);
+    m_sliderThreshold2->setValue(value);
+    m_spinThreshold1->setMinimum(value + 1);
+    m_sliderThreshold1->setMinimum(value + 1);
+    m_spinThreshold3->setMaximum(value - 1);
+    m_sliderThreshold3->setMaximum(value - 1);
+
+    int t1 = m_spinThreshold1->value();
+    int t2 = m_spinThreshold2->value();
+    int t3 = m_spinThreshold3->value();
+    m_cloudWidget->setThresholds(t1, t2, t3);
+    m_obsWidget->setThresholds(t1, t2, t3);
+
+    m_labLegend1->setText(QString("> %1mm  安全").arg(t1));
+    m_labLegend2->setText(QString("%1~%2mm  注意").arg(t2).arg(t1));
+    m_labLegend3->setText(QString("%1~%2mm  警告").arg(t3).arg(t2));
+    m_labLegend4->setText(QString("< %1mm  危险").arg(t3));
+}
+
+void MainWindow::onThreshold3Changed(int value) {
+    QSignalBlocker slider3(m_sliderThreshold3);
+    m_sliderThreshold3->setValue(value);
+    m_spinThreshold2->setMinimum(value + 1);
+    m_sliderThreshold2->setMinimum(value + 1);
+
+    int t1 = m_spinThreshold1->value();
+    int t2 = m_spinThreshold2->value();
+    int t3 = m_spinThreshold3->value();
+    m_cloudWidget->setThresholds(t1, t2, t3);
+    m_obsWidget->setThresholds(t1, t2, t3);
+
+    m_labLegend1->setText(QString("> %1mm  安全").arg(t1));
+    m_labLegend2->setText(QString("%1~%2mm  注意").arg(t2).arg(t1));
+    m_labLegend3->setText(QString("%1~%2mm  警告").arg(t3).arg(t2));
+    m_labLegend4->setText(QString("< %1mm  危险").arg(t3));
+}
+
+void MainWindow::onBtnSendThresholdClicked() {
+    if (!m_serial->isOpen()) {
+        QMessageBox::warning(this, "提示", "请先打开串口！");
+        return;
+    }
+
+    int t1 = m_spinThreshold1->value();
+    int t2 = m_spinThreshold2->value();
+    int t3 = m_spinThreshold3->value();
+
+    uint8_t frame[THRESHOLD_FRAME_LEN];
+    frame[0] = THRESHOLD_FRAME_HEADER;
+    frame[1] = THRESHOLD_CMD_SET;
+    frame[2] = static_cast<uint8_t>(t1 & 0xFF);
+    frame[3] = static_cast<uint8_t>((t1 >> 8) & 0xFF);
+    frame[4] = static_cast<uint8_t>(t2 & 0xFF);
+    frame[5] = static_cast<uint8_t>((t2 >> 8) & 0xFF);
+    frame[6] = static_cast<uint8_t>(t3 & 0xFF);
+    frame[7] = static_cast<uint8_t>((t3 >> 8) & 0xFF);
+    frame[8] = 0x00;
+    frame[9] = 0x00;
+    frame[10] = 0x00;
+    frame[11] = 0x00;
+    frame[12] = 0x00;
+    frame[13] = 0x00;
+
+    frame[14] = calcCRC8(frame, THRESHOLD_FRAME_LEN - 1);
+
+    qint64 written = m_serial->write(reinterpret_cast<const char*>(frame), THRESHOLD_FRAME_LEN);
+    m_serial->flush();
+
+    if (written == THRESHOLD_FRAME_LEN) {
+        m_labThresholdStatus->setText(
+            QString("✅ 发送成功！安全:%1mm 注意:%2mm 警告:%3mm")
+                .arg(t1).arg(t2).arg(t3)
+        );
+        m_labThresholdStatus->setStyleSheet("color: #27ae60; font-size: 12px; font-weight: bold;");
+    } else {
+        m_labThresholdStatus->setText("❌ 发送失败！");
+        m_labThresholdStatus->setStyleSheet("color: #e74c3c; font-size: 12px;");
+        QMessageBox::critical(this, "发送错误", "串口写入失败！");
+    }
+}
+
+void MainWindow::onBtnResetThresholdClicked() {
+    {
+        QSignalBlocker b1(m_spinThreshold1);
+        QSignalBlocker b2(m_spinThreshold2);
+        QSignalBlocker b3(m_spinThreshold3);
+        QSignalBlocker s1(m_sliderThreshold1);
+        QSignalBlocker s2(m_sliderThreshold2);
+        QSignalBlocker s3(m_sliderThreshold3);
+        
+        m_spinThreshold1->setValue(800);
+        m_spinThreshold2->setValue(400);
+        m_spinThreshold3->setValue(200);
+        m_sliderThreshold1->setValue(800);
+        m_sliderThreshold2->setValue(400);
+        m_sliderThreshold3->setValue(200);
+        m_spinThreshold1->setMinimum(401);
+        m_spinThreshold2->setMinimum(201);
+        m_spinThreshold2->setMaximum(799);
+        m_spinThreshold3->setMaximum(399);
+        m_sliderThreshold1->setMinimum(401);
+        m_sliderThreshold2->setMinimum(201);
+        m_sliderThreshold2->setMaximum(799);
+        m_sliderThreshold3->setMaximum(399);
+    }
+
+    m_cloudWidget->setThresholds(800, 400, 200);
+    m_obsWidget->setThresholds(800, 400, 200);
+    m_labLegend1->setText("> 800mm  安全");
+    m_labLegend2->setText("400~800mm  注意");
+    m_labLegend3->setText("200~400mm  警告");
+    m_labLegend4->setText("< 200mm  危险");
+
+    m_labThresholdStatus->setText("已恢复默认值：800/400/200mm");
+    m_labThresholdStatus->setStyleSheet("color: #f39c12; font-size: 12px;");
+}
+
 // ----- 串口操作 -----
 void MainWindow::scanPorts() {
     m_cbxPort->clear();
@@ -465,7 +830,7 @@ void MainWindow::onBtnOpenClicked() {
     m_serial->setParity(QSerialPort::NoParity);
     m_serial->setFlowControl(QSerialPort::NoFlowControl);
 
-    if (!m_serial->open(QIODevice::ReadOnly)) {
+    if (!m_serial->open(QIODevice::ReadWrite)) {
         QMessageBox::critical(this, "串口错误",
             "无法打开串口: " + m_serial->errorString() +
             "\n请确认设备已连接且驱动正常。");
