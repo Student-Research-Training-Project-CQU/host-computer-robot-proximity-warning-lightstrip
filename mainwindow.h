@@ -153,6 +153,7 @@ private:
     // --- 阈值发送状态 ---
     bool m_waitingForResponse = false;  // 是否在等待下位机响应
     QTimer *m_responseTimer = nullptr;  // 响应超时定时器
+    QByteArray m_responseBuf;           // 等待响应时的临时缓冲区
     static constexpr int RESPONSE_TIMEOUT_MS = 500;  // 超时时间500ms
 
     // --- 点云数据 ---

@@ -840,6 +840,7 @@ void MainWindow::onBtnSendThresholdClicked() {
 
     if (written == THRESHOLD_FRAME_LEN && flushed) {
         // 发送成功，等待下位机响应
+        m_responseBuf.clear();
         m_waitingForResponse = true;
         m_labThresholdStatus->setText("⏳ 已发送，等待下位机响应...");
         m_labThresholdStatus->setStyleSheet("color: #2196F3; font-size: 12px; font-weight: bold;");
@@ -896,6 +897,7 @@ void MainWindow::onResponseTimeout() {
     // 响应超时
     m_waitingForResponse = false;
     m_btnSendThreshold->setEnabled(true);
+    m_responseBuf.clear();
     
     m_labThresholdStatus->setText("❌ 发送失败！未收到下位机响应（超时）");
     m_labThresholdStatus->setStyleSheet("color: #e74c3c; font-size: 12px;");
@@ -965,16 +967,15 @@ void MainWindow::onReadyRead() {
 
     // 如果正在等待下位机响应，先检查是否收到 "OK\r\n"
     if (m_waitingForResponse) {
-        static QByteArray okResponseBuf;
-        okResponseBuf.append(data);
+        m_responseBuf.append(data);
         
         // 检查是否包含 "OK\r\n"
-        if (okResponseBuf.contains("OK\r\n")) {
+        if (m_responseBuf.contains("OK\r\n")) {
             // 收到 OK 响应！
             m_responseTimer->stop();
             m_waitingForResponse = false;
             m_btnSendThreshold->setEnabled(true);
-            okResponseBuf.clear();
+            m_responseBuf.clear();
             
             m_labThresholdStatus->setText("✅ 发送成功！收到下位机确认");
             m_labThresholdStatus->setStyleSheet("color: #27ae60; font-size: 12px; font-weight: bold;");
@@ -986,8 +987,8 @@ void MainWindow::onReadyRead() {
             msgBox.exec();
         } else {
             // 保留足够数据但避免无限增长
-            if (okResponseBuf.size() > 64) {
-                okResponseBuf = okResponseBuf.right(32);
+            if (m_responseBuf.size() > 64) {
+                m_responseBuf = m_responseBuf.right(32);
             }
         }
     }
