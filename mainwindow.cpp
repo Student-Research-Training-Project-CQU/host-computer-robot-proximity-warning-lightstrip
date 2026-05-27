@@ -2,7 +2,7 @@
 #include <QPainterPath>
 #include <QStatusBar>
 // ============================================================
-//  CRC8 查找表（来自 LD14P 开发手册，与 STM32 侧完全一致）
+//  CRC8 查找表
 // ============================================================
 const uint8_t MainWindow::CRC_TABLE[256] = {
     0x00, 0x4d, 0x9a, 0xd7, 0x79, 0x34, 0xe3, 0xae,
@@ -251,13 +251,17 @@ void ObstacleWidget::paintEvent(QPaintEvent*) {
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_serial = new QSerialPort(this);
     m_timer  = new QTimer(this);
+    m_responseTimer = new QTimer(this);
+    m_responseTimer->setSingleShot(true);
     m_scanPoints.resize(720);  // 预分配720点（≈一圈）
 
+    setWindowIcon(QIcon(":/images/1.png"));
     buildUI();
     scanPorts();
 
     connect(m_serial, &QSerialPort::readyRead,  this, &MainWindow::onReadyRead);
     connect(m_timer,  &QTimer::timeout,          this, &MainWindow::onTimerUpdate);
+    connect(m_responseTimer, &QTimer::timeout, this, &MainWindow::onResponseTimeout);
     m_timer->start(100);  // 10Hz 刷新 UI
 }
 
@@ -275,7 +279,7 @@ void MainWindow::buildUI() {
     root->setContentsMargins(8, 8, 8, 6);
 
     // ── 串口控制栏 ──────────────────────────────────────────────
-    QGroupBox *serialGrp = new QGroupBox("串口配置（波特率固定 230400，8N1）", central);
+    QGroupBox *serialGrp = new QGroupBox("串口配置（波特率 115200，8N1）", central);
     QHBoxLayout *sLay = new QHBoxLayout(serialGrp);
     sLay->setSpacing(8);
 
@@ -563,10 +567,83 @@ void MainWindow::buildThresholdTab(QWidget* tab) {
 
     mainLay->addWidget(thresholdGrp);
 
+    // LED数量设置
+    QGroupBox *ledGrp = new QGroupBox("灯带小灯数量");
+    QVBoxLayout *ledLay = new QVBoxLayout(ledGrp);
+    ledLay->setSpacing(15);
+
+    QHBoxLayout *ledRow = new QHBoxLayout();
+    QLabel *ledIconLabel = new QLabel("💡");
+    ledIconLabel->setStyleSheet("font-size: 24px;");
+    
+    QLabel *ledNameLabel = new QLabel("小灯数量:");
+    ledNameLabel->setStyleSheet("font-size: 14px; font-weight: bold; color: #ddd;");
+    
+    m_spinLedCount = new QSpinBox();
+    m_spinLedCount->setMinimum(1);
+    m_spinLedCount->setMaximum(255);
+    m_spinLedCount->setValue(16);
+    m_spinLedCount->setSuffix(" 个");
+    m_spinLedCount->setAlignment(Qt::AlignCenter);
+    m_spinLedCount->setStyleSheet(
+        "QSpinBox {"
+        "    padding: 8px 12px;"
+        "    border: 2px solid #555;"
+        "    border-radius: 6px;"
+        "    background: #1a1a2a;"
+        "    color: #ddd;"
+        "    font-size: 14px;"
+        "    min-width: 120px;"
+        "}"
+        "QSpinBox::up-button, QSpinBox::down-button {"
+        "    background: #333;"
+        "    border-radius: 3px;"
+        "}"
+        "QSpinBox::up-button:hover, QSpinBox::down-button:hover {"
+        "    background: #444;"
+        "}"
+    );
+    
+    QLabel *ledDescLabel = new QLabel("设置灯带上小灯的总数量");
+    ledDescLabel->setStyleSheet("color: #888; font-size: 11px;");
+    ledDescLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    
+    ledRow->addWidget(ledIconLabel);
+    ledRow->addWidget(ledNameLabel);
+    ledRow->addWidget(m_spinLedCount);
+    ledRow->addWidget(ledDescLabel, 1);
+
+    m_sliderLedCount = new QSlider(Qt::Horizontal);
+    m_sliderLedCount->setMinimum(1);
+    m_sliderLedCount->setMaximum(255);
+    m_sliderLedCount->setValue(16);
+    m_sliderLedCount->setStyleSheet(
+        "QSlider::groove:horizontal {"
+        "    background: #2a2a3a;"
+        "    height: 8px;"
+        "    border-radius: 4px;"
+        "}"
+        "QSlider::handle:horizontal {"
+        "    background: #ff7800;"
+        "    width: 20px;"
+        "    height: 20px;"
+        "    margin: -6px 0;"
+        "    border-radius: 10px;"
+        "}"
+        "QSlider::handle:horizontal:hover {"
+        "    background: #ffffff;"
+        "}"
+    );
+
+    ledLay->addLayout(ledRow);
+    ledLay->addWidget(m_sliderLedCount);
+
+    mainLay->addWidget(ledGrp);
+
     QHBoxLayout *btnLay = new QHBoxLayout();
     btnLay->setSpacing(10);
 
-    m_btnSendThreshold = new QPushButton("🚀 发送阈值到下位机");
+    m_btnSendThreshold = new QPushButton(" 发送到下位机");
     m_btnSendThreshold->setFixedHeight(45);
     m_btnSendThreshold->setStyleSheet(
         "QPushButton {"
@@ -587,7 +664,7 @@ void MainWindow::buildThresholdTab(QWidget* tab) {
         "}"
     );
 
-    m_btnResetThreshold = new QPushButton("🔄 恢复默认");
+    m_btnResetThreshold = new QPushButton(" 恢复默认");
     m_btnResetThreshold->setFixedHeight(45);
     m_btnResetThreshold->setStyleSheet(
         "QPushButton {"
@@ -644,6 +721,16 @@ void MainWindow::buildThresholdTab(QWidget* tab) {
         onThreshold3Changed(value);
     });
 
+    // LED数量连接
+    connect(m_spinLedCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        QSignalBlocker blocker(m_sliderLedCount);
+        m_sliderLedCount->setValue(value);
+    });
+    connect(m_sliderLedCount, &QSlider::valueChanged, this, [this](int value) {
+        QSignalBlocker blocker(m_spinLedCount);
+        m_spinLedCount->setValue(value);
+    });
+
     m_spinThreshold1->setMinimum(401);
     m_spinThreshold2->setMinimum(201);
     m_spinThreshold2->setMaximum(799);
@@ -655,15 +742,6 @@ void MainWindow::buildThresholdTab(QWidget* tab) {
 
     m_cloudWidget->setThresholds(800, 400, 200);
     m_obsWidget->setThresholds(800, 400, 200);
-
-    m_btnSendThreshold->setEnabled(false);
-    connect(m_serial, &::QSerialPort::open, this, [this]() {
-        m_btnSendThreshold->setEnabled(true);
-    });
-    connect(m_serial, &::QSerialPort::close, this, [this]() {
-        m_btnSendThreshold->setEnabled(false);
-        m_labThresholdStatus->setText("串口未连接");
-    });
 
     mainLay->addStretch();
 }
@@ -730,9 +808,15 @@ void MainWindow::onBtnSendThresholdClicked() {
         return;
     }
 
+    if (m_waitingForResponse) {
+        QMessageBox::warning(this, "提示", "正在等待下位机响应，请稍候...");
+        return;
+    }
+
     int t1 = m_spinThreshold1->value();
     int t2 = m_spinThreshold2->value();
     int t3 = m_spinThreshold3->value();
+    uint8_t ledCount = static_cast<uint8_t>(m_spinLedCount->value());
 
     uint8_t frame[THRESHOLD_FRAME_LEN];
     frame[0] = THRESHOLD_FRAME_HEADER;
@@ -743,28 +827,28 @@ void MainWindow::onBtnSendThresholdClicked() {
     frame[5] = static_cast<uint8_t>((t2 >> 8) & 0xFF);
     frame[6] = static_cast<uint8_t>(t3 & 0xFF);
     frame[7] = static_cast<uint8_t>((t3 >> 8) & 0xFF);
-    frame[8] = 0x00;
+    frame[8] = ledCount;
     frame[9] = 0x00;
     frame[10] = 0x00;
     frame[11] = 0x00;
     frame[12] = 0x00;
     frame[13] = 0x00;
 
-    frame[14] = calcCRC8(frame, THRESHOLD_FRAME_LEN - 1);
-
     qint64 written = m_serial->write(reinterpret_cast<const char*>(frame), THRESHOLD_FRAME_LEN);
-    m_serial->flush();
+    bool flushed = m_serial->flush();
+    m_serial->waitForBytesWritten(100);
 
-    if (written == THRESHOLD_FRAME_LEN) {
-        m_labThresholdStatus->setText(
-            QString("✅ 发送成功！安全:%1mm 注意:%2mm 警告:%3mm")
-                .arg(t1).arg(t2).arg(t3)
-        );
-        m_labThresholdStatus->setStyleSheet("color: #27ae60; font-size: 12px; font-weight: bold;");
+    if (written == THRESHOLD_FRAME_LEN && flushed) {
+        // 发送成功，等待下位机响应
+        m_waitingForResponse = true;
+        m_labThresholdStatus->setText("⏳ 已发送，等待下位机响应...");
+        m_labThresholdStatus->setStyleSheet("color: #2196F3; font-size: 12px; font-weight: bold;");
+        m_btnSendThreshold->setEnabled(false);
+        m_responseTimer->start(RESPONSE_TIMEOUT_MS);
     } else {
-        m_labThresholdStatus->setText("❌ 发送失败！");
+        m_labThresholdStatus->setText("❌ 发送失败！" + m_serial->errorString());
         m_labThresholdStatus->setStyleSheet("color: #e74c3c; font-size: 12px;");
-        QMessageBox::critical(this, "发送错误", "串口写入失败！");
+        QMessageBox::critical(this, "发送错误", "串口写入失败: " + m_serial->errorString());
     }
 }
 
@@ -776,6 +860,8 @@ void MainWindow::onBtnResetThresholdClicked() {
         QSignalBlocker s1(m_sliderThreshold1);
         QSignalBlocker s2(m_sliderThreshold2);
         QSignalBlocker s3(m_sliderThreshold3);
+        QSignalBlocker bLed(m_spinLedCount);
+        QSignalBlocker sLed(m_sliderLedCount);
         
         m_spinThreshold1->setValue(800);
         m_spinThreshold2->setValue(400);
@@ -783,6 +869,8 @@ void MainWindow::onBtnResetThresholdClicked() {
         m_sliderThreshold1->setValue(800);
         m_sliderThreshold2->setValue(400);
         m_sliderThreshold3->setValue(200);
+        m_spinLedCount->setValue(16);
+        m_sliderLedCount->setValue(16);
         m_spinThreshold1->setMinimum(401);
         m_spinThreshold2->setMinimum(201);
         m_spinThreshold2->setMaximum(799);
@@ -800,8 +888,23 @@ void MainWindow::onBtnResetThresholdClicked() {
     m_labLegend3->setText("200~400mm  警告");
     m_labLegend4->setText("< 200mm  危险");
 
-    m_labThresholdStatus->setText("已恢复默认值：800/400/200mm");
+    m_labThresholdStatus->setText("已恢复默认值：800/400/200mm，小灯16个");
     m_labThresholdStatus->setStyleSheet("color: #f39c12; font-size: 12px;");
+}
+
+void MainWindow::onResponseTimeout() {
+    // 响应超时
+    m_waitingForResponse = false;
+    m_btnSendThreshold->setEnabled(true);
+    
+    m_labThresholdStatus->setText("❌ 发送失败！未收到下位机响应（超时）");
+    m_labThresholdStatus->setStyleSheet("color: #e74c3c; font-size: 12px;");
+    
+    QMessageBox msgBox(this);
+    msgBox.setIcon(QMessageBox::Critical);
+    msgBox.setWindowTitle("失败");
+    msgBox.setText("发送超时，未收到下位机确认！");
+    msgBox.exec();
 }
 
 // ----- 串口操作 -----
@@ -824,11 +927,8 @@ void MainWindow::onBtnOpenClicked() {
     }
 
     m_serial->setPortName(portName);
-    m_serial->setBaudRate(230400);
-    m_serial->setDataBits(QSerialPort::Data8);
-    m_serial->setStopBits(QSerialPort::OneStop);
-    m_serial->setParity(QSerialPort::NoParity);
-    m_serial->setFlowControl(QSerialPort::NoFlowControl);
+    m_serial->setBaudRate(115200);
+    // 使用默认配置：8数据位，无校验，1停止位，无流控
 
     if (!m_serial->open(QIODevice::ReadWrite)) {
         QMessageBox::critical(this, "串口错误",
@@ -841,6 +941,7 @@ void MainWindow::onBtnOpenClicked() {
     m_btnOpen->setEnabled(false);
     m_btnClose->setEnabled(true);
     m_cbxPort->setEnabled(false);
+    m_btnSendThreshold->setEnabled(true); // 串口打开，按钮可用
     m_rxBuf.clear();
     m_ptIdx = 0;
     m_frameCount = 0;
@@ -853,12 +954,43 @@ void MainWindow::onBtnCloseClicked() {
     m_btnOpen->setEnabled(true);
     m_btnClose->setEnabled(false);
     m_cbxPort->setEnabled(true);
+    m_btnSendThreshold->setEnabled(false); // 串口关闭，按钮不可用
+    m_labThresholdStatus->setText("串口未连接");
 }
 
 // ----- 数据接收 -----
 void MainWindow::onReadyRead() {
     const QByteArray data = m_serial->readAll();
     m_rxCount += data.size();
+
+    // 如果正在等待下位机响应，先检查是否收到 "OK\r\n"
+    if (m_waitingForResponse) {
+        static QByteArray okResponseBuf;
+        okResponseBuf.append(data);
+        
+        // 检查是否包含 "OK\r\n"
+        if (okResponseBuf.contains("OK\r\n")) {
+            // 收到 OK 响应！
+            m_responseTimer->stop();
+            m_waitingForResponse = false;
+            m_btnSendThreshold->setEnabled(true);
+            okResponseBuf.clear();
+            
+            m_labThresholdStatus->setText("✅ 发送成功！收到下位机确认");
+            m_labThresholdStatus->setStyleSheet("color: #27ae60; font-size: 12px; font-weight: bold;");
+            
+            QMessageBox msgBox(this);
+            msgBox.setIcon(QMessageBox::Information);
+            msgBox.setWindowTitle("成功");
+            msgBox.setText("收到 OK，发送成功。");
+            msgBox.exec();
+        } else {
+            // 保留足够数据但避免无限增长
+            if (okResponseBuf.size() > 64) {
+                okResponseBuf = okResponseBuf.right(32);
+            }
+        }
+    }
 
     if (!m_paused && m_chkHex->isChecked()) {
         const QString hex = data.toHex(' ').toUpper();
@@ -1087,4 +1219,20 @@ uint8_t MainWindow::calcCRC8(const uint8_t* data, int len) const {
     for (int i = 0; i < len; ++i)
         crc = CRC_TABLE[(crc ^ data[i]) & 0xFF];
     return crc;
+}
+
+void MainWindow::paintEvent(QPaintEvent *event) {
+    QMainWindow::paintEvent(event);
+    
+    QPixmap logo(":/images/2.png");
+    if (!logo.isNull()) {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setOpacity(0.85);
+        
+        // 计算右上角位置，距离边缘30像素
+        int size = 120;
+        QPixmap scaled = logo.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        p.drawPixmap(width() - scaled.width() - 30, 30, scaled);
+    }
 }

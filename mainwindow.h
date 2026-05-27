@@ -117,6 +117,7 @@ private slots:
     void onThreshold1Changed(int value);
     void onThreshold2Changed(int value);
     void onThreshold3Changed(int value);
+    void onResponseTimeout();  // 响应超时处理
 
 private:
     // --- UI 构建 ---
@@ -142,12 +143,17 @@ private:
     // --- 灯带阈值通信协议常量 ---
     static constexpr uint8_t THRESHOLD_FRAME_HEADER = 0xAA;
     static constexpr uint8_t THRESHOLD_CMD_SET      = 0x10;
-    static constexpr uint8_t THRESHOLD_FRAME_LEN     = 15;
+    static constexpr uint8_t THRESHOLD_FRAME_LEN     = 14;
 
     // --- 串口 ---
     QSerialPort *m_serial;
     QByteArray   m_rxBuf;       // 未处理的接收缓冲（帧组装用）
     qint64       m_rxCount = 0; // 总接收字节数
+
+    // --- 阈值发送状态 ---
+    bool m_waitingForResponse = false;  // 是否在等待下位机响应
+    QTimer *m_responseTimer = nullptr;  // 响应超时定时器
+    static constexpr int RESPONSE_TIMEOUT_MS = 500;  // 超时时间500ms
 
     // --- 点云数据 ---
     QVector<LidarPoint> m_scanPoints;    // 当前圈点云（720点槽位）
@@ -185,6 +191,8 @@ private:
     QSlider *m_sliderThreshold1;
     QSlider *m_sliderThreshold2;
     QSlider *m_sliderThreshold3;
+    QSpinBox *m_spinLedCount;
+    QSlider *m_sliderLedCount;
     QPushButton *m_btnSendThreshold;
     QPushButton *m_btnResetThreshold;
     QLabel *m_labThresholdStatus;
@@ -192,6 +200,9 @@ private:
     // 状态栏
     QLabel *m_labStatus, *m_labRX;
     QTimer *m_timer;
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
 };
 
 #endif // MAINWINDOW_H
